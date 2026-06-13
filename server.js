@@ -42,18 +42,21 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
     tools: [
       {
         name: "search_zim",
-        description: "Search for entries within a specific ZIM file (e.g., Wikipedia or Wiktionary)",
+        description: "Search for entries within a specific ZIM file. Returns results in JSON format with entry titles and URLs. Use keyword search terms to find relevant articles.",
         inputSchema: {
           type: "object",
           properties: {
-            query: { type: "string", description: "Search query" },
+            query: { 
+              type: "string", 
+              description: "Search terms or keywords to find in the ZIM file content" 
+            },
             zim_file: { 
               type: "string", 
-              description: "The specific ZIM file to search. If omitted, defaults to Wikipedia." 
+              description: "The specific ZIM file to search. If omitted, defaults to your default ZIM file." 
             },
             count: { 
               type: "number", 
-              description: "Maximum number of search results to return. Use a low number (e.g., 3-5) to save tokens." 
+              description: "Maximum number of results to return (default: 3). Use lower values (1-3) to save tokens." 
             }
           },
           required: ["query"]
@@ -61,14 +64,17 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "get_content",
-        description: "Get the full text content of an entry from a specific ZIM file",
+        description: "Retrieve the complete text content of an article from a ZIM file. Returns all sections as plain text (no HTML). Use this when you need full article details; for quick overviews, use 'get_content_summary' instead. WARNING: Full articles can be very long and token-intensive.",
         inputSchema: {
           type: "object",
           properties: {
-            title: { type: "string", description: "The article or word title" },
+            title: { 
+              type: "string", 
+              description: "Article or entry title (spaces are automatically converted)" 
+            },
             zim_file: { 
               type: "string", 
-              description: "The specific ZIM file to use." 
+              description: "Name of the ZIM file (required). Example: 'wikipedia_en_all_maxi_2026-02'" 
             }
           },
           required: ["title", "zim_file"]
@@ -76,18 +82,21 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "get_content_summary",
-        description: "Fetch only the introductory summary of a specific page to save tokens.",
+        description: "Get the first few paragraphs of an article's introduction section. Returns plain text (no HTML) containing only the opening section of the page. Use this for quick topic overviews instead of 'get_content' which returns the full article.",
         inputSchema: {
           type: "object",
           properties: {
-            title: { type: "string", description: "Exact title of the page" },
+            title: { 
+              type: "string", 
+              description: "Article title (spaces are automatically converted to underscores)" 
+            },
             zim_file: { 
               type: "string", 
-              description: "The specific ZIM file. Defaults to Wikipedia." 
+              description: "ZIM file name. Only specify if different from your default ZIM file. Example: 'wikipedia_en_all_maxi_2026-02'" 
             },
             paragraphs: { 
               type: "number", 
-              description: "Number of paragraphs to return. Defaults to 2." 
+              description: "Number of opening paragraphs to return (default: 2). Use 1-2 for brief overview, 3-5 for detailed summary." 
             }
           },
           required: ["title"]
@@ -95,7 +104,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "list_all_zims",
-        description: "List all available ZIM files currently loaded in your Kiwix instance",
+        description: "List all available ZIM files currently loaded in your Kiwix instance. Returns JSON with file details including names, titles, and descriptions.",
         inputSchema: {
           type: "object",
           properties: {} // This was missing, causing the error

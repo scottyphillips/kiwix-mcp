@@ -154,7 +154,52 @@ This server uses the stdio transport protocol, which is supported by most MCP cl
 - **Command:** `node server.js`
 - **Working Directory:** Project root
 
-## Running Manually
+## Testing
+
+A comprehensive test harness is included to verify your Kiwix instance is working correctly.
+
+### Run All Tests
+
+```bash
+npm test
+```
+
+This runs **13 tests** covering:
+
+| Category | Tests |
+|----------|-------|
+| **Connectivity** | Server reachability, home page content |
+| **ZIM Files** | List all available ZIM files (XML/JSON parsing) |
+| **Search** | Basic search, no results, count parameter, special characters, multi-ZIM |
+| **Content** | Article retrieval, invalid ZIM handling |
+| **Performance** | Search response time, content response time |
+
+### Test Output
+
+Results are printed to the console and saved to `test-results.json`:
+
+```json
+{
+  "timestamp": "2026-06-13T07:42:24.152Z",
+  "target": "http://192.168.1.5:8080",
+  "defaultZim": "wikipedia_en_all_maxi_2026-02",
+  "totalTests": 13,
+  "passedTests": 13,
+  "failedTests": 0,
+  "successRate": "100.0%",
+  "results": [...]
+}
+```
+
+### Custom Configuration
+
+Override defaults via environment variables:
+
+```bash
+KIWIX_BASE_URL=http://192.168.1.100:8080 DEFAULT_ZIM=my_custom_zim npm test
+```
+
+### Running Manually
 
 For development or testing:
 
@@ -177,6 +222,8 @@ kiwix-wiki-mcp/
 ├── .env              # Your configuration (gitignored)
 ├── .gitignore        # Git ignore rules
 ├── server.js         # MCP server implementation
+├── test-harness.js   # Test harness for Kiwix connectivity testing
+├── test-results.json # Generated test results (JSON format)
 ├── package.json      # Dependencies and scripts
 └── README.md         # This file
 ```
