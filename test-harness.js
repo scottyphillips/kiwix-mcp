@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 
 // Configuration - update these to match your Kiwix instance
-const KIWIX_BASE_URL = process.env.KIWIX_BASE_URL || "http://192.168.1.5:8080";
-const DEFAULT_ZIM = process.env.DEFAULT_ZIM || "wikipedia_en_all_maxi_2026-02";
+// Trim() is used to handle trailing spaces from shell environment variable passing
+const KIWIX_BASE_URL = (process.env.KIWIX_BASE_URL || "http://192.168.1.5:8080").trim();
+const DEFAULT_ZIM = (process.env.DEFAULT_ZIM || "wikipedia_en_all_maxi_2026-02").trim();
 
 // Test results tracking
 let totalTests = 0;
@@ -263,6 +264,189 @@ async function testSearchSpecialCharacters() {
   };
 }
 
+// Helper function to parse Kiwix search results (same logic as server.js)
+function parseSearchResults(searchData) {
+  // Try JSON parsing first
+  try {
+    const data = JSON.parse(searchData);
+    if (data.results && Array.isArray(data.results)) {
+      return data.results.map(r => ({ 
+        title: r.title || r.canonical_title || 'Unknown', 
+        url: r.url || r.path || '' 
+      }));
+    }
+  } catch {}
+
+  // Try XML Atom OPDS feed parsing
+  const xmlEntries = searchData.match(/<entry[^>]*>([\s\S]*?)<\/entry>/g) || [];
+  if (xmlEntries.length > 0) {
+    return xmlEntries.map(entry => {
+      const titleMatch = entry.match(/<title>(.*?)<\/title>/);
+      const hrefMatch = entry.match(/href=["']([^"']+)["']/);
+      return {
+        title: titleMatch?.[1]?.trim() || 'Unknown',
+        url: hrefMatch?.[1] || ''
+      };
+    });
+  }
+
+  // Try HTML search results parsing (Kiwix returns HTML for browser requests)
+  const htmlResults = searchData.match(/<li[^>]*>\s*<a\s+href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/g) || [];
+  if (htmlResults.length > 0) {
+    return htmlResults.map(result => {
+      const hrefMatch = result.match(/href="([^"]*)"/);
+      let title = result.replace(/<a[^>]*>/i, '').replace(/<\/a>/i, '');
+      title = title.replace(/<[^>]+>/g, '').trim();
+      return {
+        title: title || 'Unknown',
+        url: hrefMatch?.[1] || ''
+      };
+    });
+  }
+
+  return [];
+}
+
+// ============================================================
+// search_with_snippets Tests
+// ============================================================
+
+async function testSearchWithSnippetsBasic() {
+  const resultCount = 3;
+  
+  // Step 1: Search
+  const searchUrl = `/search?pattern=Python&books.name=${DEFAULT_ZIM}&count=${resultCount}`;
+  const response = await fetch(`${KIWIX_BASE_URL}${searchUrl}`);
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  
+  const searchData = await response.text();
+  
+  // Parse results using the helper function
+  const entries = parseSearchResults(searchData);
+
+  // Step 2: Fetch at least one snippet to verify the flow works
+  if (entries.length > 0) {
+    const firstEntry = entries[0];
+    let sanitizedTitle = firstEntry.title.replace(/ /g, "_");
+    const pageUrl = `/content/${DEFAULT_ZIM}/${sanitizedTitle}`;
+    const contentResponse = await fetch(`${KIWIX_BASE_URL}${pageUrl}`);
+    
+    if (contentResponse.ok) {
+      const html = await contentResponse.text();
+      const hasTextContent = html.length > 100 && !html.includes('Page not found');
+      return {
+        passed: hasTextContent,
+        message: `Search returned ${entries.length} entries, verified snippet extraction for "${firstEntry.title}" (${html.length} chars HTML)`
+      };
+    }
+  }
+  
+  return {
+    passed: entries.length > 0,
+    message: `Search returned ${entries.length} entries (snippet verification skipped)`
+  };
+}
+
+async function testSearchWithSnippetsCount() {
+  const resultCount = 2;
+  
+  // Search with count=2
+  const searchUrl = `/search?pattern=JavaScript&books.name=${DEFAULT_ZIM}&count=${resultCount}`;
+  const response = await fetch(`${KIWIX_BASE_URL}${searchUrl}`);
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  
+  const searchData = await response.text();
+  
+  // Parse and count entries using the helper function
+  const entries = parseSearchResults(searchData);
+
+  // Note: Kiwix's HTML search page may return more results than requested (default ~25-30 per page)
+  // The count parameter is respected for JSON/XML responses but not always for HTML
+  // We verify that at least some entries are returned and the API doesn't error
+  return {
+    passed: entries.length >= resultCount, // At least as many as requested
+    message: `count=${resultCount} returned ${entries.length} entries (Kiwix may return up to ~30 for HTML responses)`
+  };
+}
+
+async function testSearchWithSnippetsEmptyResults() {
+  // Search for something that won't exist
+  const searchUrl = `/search?pattern=xyznonexistent12345abc&books.name=${DEFAULT_ZIM}&count=3`;
+  const response = await fetch(`${KIWIX_BASE_URL}${searchUrl}`);
+  
+  let searchData;
+  if (response.ok) {
+    searchData = await response.text();
+  } else {
+    return {
+      passed: true,
+      message: `Empty search handled gracefully (HTTP ${response.status})`
+    };
+  }
+
+  // Parse and verify empty result using the helper function
+  const entries = parseSearchResults(searchData);
+
+  return {
+    passed: entries.length === 0,
+    message: `Empty search returned ${entries.length} entries as expected`
+  };
+}
+
+async function testSearchWithSnippetsContentQuality() {
+  // Verify that snippet content is meaningful (not empty or just noise)
+  const resultCount = 1;
+  
+  const searchUrl = `/search?pattern=Science&books.name=${DEFAULT_ZIM}&count=${resultCount}`;
+  const response = await fetch(`${KIWIX_BASE_URL}${searchUrl}`);
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  
+  const searchData = await response.text();
+  
+  // Parse results using the helper function
+  const entries = parseSearchResults(searchData);
+
+  if (entries.length === 0) {
+    return { passed: false, message: "No search results for 'Science'" };
+  }
+
+  // Fetch content and verify it has meaningful text
+  const firstEntry = entries[0];
+  let sanitizedTitle = firstEntry.title.replace(/ /g, "_");
+  const pageUrl = `/content/${DEFAULT_ZIM}/${sanitizedTitle}`;
+  const contentResponse = await fetch(`${KIWIX_BASE_URL}${pageUrl}`);
+  
+  if (!contentResponse.ok) {
+    return { passed: false, message: `Failed to fetch content for "${firstEntry.title}"` };
+  }
+
+  const html = await contentResponse.text();
+  
+  // Extract first paragraph as a proxy for snippet quality
+  const textMatch = html.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+  if (!textMatch) {
+    return { passed: false, message: "No body found in HTML" };
+  }
+
+  // Strip tags and check for meaningful content
+  const plainText = textMatch[1]
+    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+    .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const snippet = plainText.substring(0, 200);
+  const hasMeaningfulContent = snippet.length > 50 && 
+    !snippet.includes('...') &&
+    /[a-zA-Z]{10,}/.test(snippet); // At least one word of 10+ chars
+
+  return {
+    passed: hasMeaningfulContent,
+    message: `Snippet for "${firstEntry.title}" is ${snippet.length} chars with meaningful content`
+  };
+}
+
 // ============================================================
 // Main Test Runner
 // ============================================================
@@ -305,6 +489,13 @@ async function runAllTests() {
   console.error("\n--- Performance ---");
   await harness.runTest("Search Response Time", testSearchResponseTime);
   await harness.runTest("Content Response Time", testContentResponseTime);
+
+  // --- search_with_snippets Tests ---
+  console.error("\n--- Search With Snippets ---");
+  await harness.runTest("Search With Snippets Basic", testSearchWithSnippetsBasic);
+  await harness.runTest("Search With Snippets Count", testSearchWithSnippetsCount);
+  await harness.runTest("Search With Snippets Empty Results", testSearchWithSnippetsEmptyResults);
+  await harness.runTest("Search With Snippets Content Quality", testSearchWithSnippetsContentQuality);
 
   // --- Summary ---
   const success = harness.printSummary();

@@ -12,6 +12,96 @@ const KIWIX_BASE = process.env.KIWIX_BASE_URL || "http://192.168.1.5:8080";
 // Default ZIM file to use if none is specified (Wikipedia) (override via DEFAULT_ZIM env var)
 const DEFAULT_ZIM = process.env.DEFAULT_ZIM || "wikipedia_en_all_maxi_2026-02";
 
+// Snippet length in characters for search_with_snippets tool
+const SNIPPET_LENGTH = 200;
+
+/**
+ * Clean Wikipedia/article text by removing markers, citations, and low-value sections.
+ * Removes: [edit] markers, citation numbers, See also/Further reading/External links/References sections.
+ */
+function cleanArticleText(text) {
+  // Remove [edit] markers from headings
+  let cleaned = text.replace(/\[edit\]/gi, '');
+
+  // Remove numeric citation brackets at end of lines: "text[1]", "text[2][3]", or "[1]" alone
+  // Preserves: IPA notation mid-word (e.g., "[i]" in middle of sentence), chemical formulas, wikilinks {{...}}
+  cleaned = cleaned.replace(/(?:\b|\])(\[\d+\])+\s*$/gm, '');
+
+  // Remove "See also", "Further reading", "External links", "References" sections (to end of text)
+  const lowValueSections = [
+    'see also',
+    'further reading',
+    'external links',
+    'references'
+  ];
+  for (const section of lowValueSections) {
+    // Match == Section == or ==Section== through end of content
+    const regex = new RegExp(`\\n{0,2}={1,3}\\s*${section}\\s*={1,3}[\\s\\S]*$`, 'i');
+    cleaned = cleaned.replace(regex, '');
+    
+    // Also match at top level without == markers (plain text headings)
+    const lineRegex = new RegExp(`\\n{0,2}(?<!\\w)${section}\\b[\\s\\S]*?(?=\\n{2,}|$)`, 'i');
+    cleaned = cleaned.replace(lineRegex, '');
+  }
+
+  // Remove standalone Notes section
+  cleaned = cleaned.replace(/={1,3}\s*notes\s*={1,3}[\s\S]*$/i, '');
+
+  return cleaned.trim();
+}
+
+/**
+ * Parse Kiwix search results into array of {title, url} objects.
+ * Handles JSON, XML Atom OPDS feed, and HTML search result pages.
+ */
+function parseSearchResults(searchData) {
+  // Try JSON parsing first (Kiwix returns JSON when Accept: application/json)
+  try {
+    const data = JSON.parse(searchData);
+    if (data.results && Array.isArray(data.results)) {
+      return data.results.map(r => ({ 
+        title: r.title || r.canonical_title || 'Unknown', 
+        url: r.url || r.path || '' 
+      }));
+    }
+  } catch {}
+
+  // Try XML Atom OPDS feed parsing (Kiwix returns XML for OPDS-compatible clients)
+  const xmlEntries = searchData.match(/<entry[^>]*>([\s\S]*?)<\/entry>/g) || [];
+  if (xmlEntries.length > 0) {
+    return xmlEntries.map(entry => {
+      const titleMatch = entry.match(/<title>(.*?)<\/title>/);
+      const hrefMatch = entry.match(/href=["']([^"']+)["']/);
+      return {
+        title: titleMatch?.[1]?.trim() || 'Unknown',
+        url: hrefMatch?.[1] || ''
+      };
+    });
+  }
+
+  // Try HTML search results parsing (Kiwix returns HTML for browser requests)
+  const htmlResults = searchData.match(/<li[^>]*>\s*<a\s+href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/g) || [];
+  if (htmlResults.length > 0) {
+    return htmlResults.map(result => {
+      const hrefMatch = result.match(/href="([^"]*)"/);
+      // Extract title, stripping HTML tags and <b> highlight markers
+      let title = result.replace(/<a[^>]*>/i, '').replace(/<\/a>/i, '');
+      title = title.replace(/<[^>]+>/g, '').trim();
+      return {
+        title: title || 'Unknown',
+        url: hrefMatch?.[1] || ''
+      };
+    });
+  }
+
+  // Fallback: treat each line as a result (plain text format)
+  const lines = searchData.split('\n').filter(l => l.trim());
+  return lines.map(line => ({
+    title: line.trim(),
+    url: line.trim()
+  }));
+}
+
 const server = new Server(
   {
     name: "kiwix-multi-tool-mcp",
@@ -57,6 +147,28 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             count: { 
               type: "number", 
               description: "Maximum number of results to return (default: 3). Use lower values (1-3) to save tokens." 
+            }
+          },
+          required: ["query"]
+        }
+      },
+      {
+        name: "search_with_snippets",
+        description: "Search for articles and return short content snippets (~200 chars) from each result. Use this to evaluate relevance before fetching full content with 'get_content'. Returns JSON array with title, snippet, and URL for each result. This is the most token-efficient way to explore multiple articles at once.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            query: { 
+              type: "string", 
+              description: "Search terms or keywords to find in the ZIM file content" 
+            },
+            zim_file: { 
+              type: "string", 
+              description: "The specific ZIM file to search. If omitted, defaults to your default ZIM file." 
+            },
+            count: { 
+              type: "number", 
+              description: "Maximum number of results to return (default: 3). Each result includes a ~200 character content snippet for relevance evaluation." 
             }
           },
           required: ["query"]
@@ -122,7 +234,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   try {
     switch (name) {
       case "search_zim": {
-              
+               
               // Default to a small number (e.g., 3) if the LLM doesn't specify one
               const resultCount = args?.count || 3; 
               
@@ -135,18 +247,87 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
               };
             }
 
+      case "search_with_snippets": {
+        // Default to a small number if not specified
+        const resultCount = args?.count || 3;
+        
+        // Step 1: Perform the search
+        const searchUrl = `/search?pattern=${encodeURIComponent(args.query)}&books.name=${targetZim}&count=${resultCount}`;
+        const searchData = await fetchKiwix(searchUrl);
+        const results = parseSearchResults(searchData);
+        
+        if (results.length === 0) {
+          return {
+            content: [{ type: "text", text: JSON.stringify([], null, 2) }]
+          };
+        }
+        
+        // Step 2: Fetch a short snippet from each result
+        const snippets = [];
+        for (const entry of results) {
+          try {
+            let sanitizedTitle = entry.title.replace(/ /g, "_");
+            const pageUrl = `/content/${targetZim}/${sanitizedTitle}`;
+            const rawHtml = await fetchKiwix(pageUrl);
+            
+            // Convert HTML to clean text with table/citation/section removal
+            const rawCleanText = convert(rawHtml, {
+              wordwrap: false,
+              selectors: [
+                { selector: 'img', format: 'skip' },
+                { selector: 'a', options: { ignoreHref: true } },
+                { selector: 'nav', format: 'skip' },
+                { selector: 'table', format: 'skip' },
+                { selector: 'footer', format: 'skip' }
+              ]
+            });
+            
+            // Remove [edit] markers, citation numbers, and low-value sections (first 500 chars only)
+            const cleanText = cleanArticleText(rawCleanText);
+            
+            // Truncate to SNIPPET_LENGTH characters with ellipsis
+            const snippet = cleanText.substring(0, SNIPPET_LENGTH).trim();
+            const truncated = cleanText.length > SNIPPET_LENGTH;
+            
+            snippets.push({
+              title: entry.title,
+              snippet: truncated ? snippet + '...' : snippet,
+              url: entry.url || `/${targetZim}/${sanitizedTitle}`
+            });
+          } catch (err) {
+            // If content fetch fails for a specific entry, include placeholder
+            snippets.push({
+              title: entry.title,
+              snippet: '(Could not fetch content snippet)',
+              url: entry.url || ''
+            });
+          }
+        }
+        
+        return {
+          content: [{ type: "text", text: JSON.stringify(snippets, null, 2) }]
+        };
+      }
+
       case "get_content": {
               let sanitizedTitle = args.title.replace(/ /g, "_");
               const pageUrl = `/content/${targetZim}/${sanitizedTitle}`;
               const rawHtml = await fetchKiwix(pageUrl);
               
-              // Brute-force strip tags and collapse excess whitespace
-              const cleanText = rawHtml
-                  .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '') // Attempt to kill CSS
-                  .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '') // Attempt to kill JS
-                  .replace(/<[^>]+>/g, ' ') // Replace all other tags with a space
-                  .replace(/\s+/g, ' ') // Collapse multiple spaces into one
-                  .trim();
+              // Use html-to-text for clean output with table/infobox stripping
+              const rawCleanText = convert(rawHtml, {
+                wordwrap: false,
+                selectors: [
+                  { selector: 'img', format: 'skip' },
+                  { selector: 'a', options: { ignoreHref: true } },
+                  { selector: 'table', format: 'skip' },      // Skip infoboxes, comparison tables
+                  { selector: 'nav', format: 'skip' },         // Skip navigation elements
+                  { selector: 'footer', format: 'skip' }       // Skip reference footers
+                ]
+              });
+              
+              // Remove [edit] markers, citation numbers, and low-value sections
+              const cleanText = cleanArticleText(rawCleanText);
 
               return {
                 content: [{ type: "text", text: cleanText }]
@@ -160,8 +341,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
               // Fetch the raw HTML
               const rawHtml = await fetchKiwix(pageUrl);
               
-              // Strip the HTML
-              const cleanText = convert(rawHtml, {
+              // Strip the HTML with table/navigation/infobox removal
+              const rawCleanText = convert(rawHtml, {
                 wordwrap: false,
                 selectors: [
                   { selector: 'img', format: 'skip' },
@@ -171,6 +352,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                   { selector: 'footer', format: 'skip' }
                 ]
               });
+
+              // Remove [edit] markers, citation numbers, and low-value sections
+              const cleanText = cleanArticleText(rawCleanText);
 
               // Determine how many paragraphs to keep (default: 2)
               const paraCount = args?.paragraphs || 2;

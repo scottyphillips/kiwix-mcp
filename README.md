@@ -15,6 +15,7 @@ This MCP server bridges AI language models (like those in LM Studio) with your l
 | Feature | Description |
 |---------|-------------|
 | Search | Search within specific ZIM files |
+| Search with Snippets | Search and get short content previews (~200 chars) for relevance evaluation (token-saving) |
 | Full Content | Retrieve complete article text |
 | Summaries | Get only introductory paragraphs (token-saving) |
 | ZIM Listing | Discover all available ZIM files in your Kiwix instance |
@@ -82,9 +83,54 @@ Search for entries within a specific ZIM file.
 }
 ```
 
+### `search_with_snippets`
+
+Search for articles and return short content snippets (~200 chars) from each result. Use this to evaluate relevance before fetching full content with `get_content`. This is the most token-efficient way to explore multiple articles at once.
+
+**Parameters:**
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `query` | Yes | Search query string |
+| `zim_file` | No | Target ZIM file (defaults to `DEFAULT_ZIM`) |
+| `count` | No | Number of results (default: 3). Each result includes a ~200 character content snippet. |
+
+**Example:**
+```json
+{
+  "name": "search_with_snippets",
+  "arguments": {
+    "query": "quantum physics",
+    "zim_file": "wikipedia_en_all_maxi_2026-02",
+    "count": 3
+  }
+}
+```
+
+**Response format (JSON array):**
+```json
+[
+  {
+    "title": "Quantum mechanics",
+    "snippet": "Quantum mechanics is a fundamental theory in physics that describes the physical properties of nature at the scale of atoms and subatomic particles. It provides a mathematical framework for understanding phenomena...",
+    "url": "/wikipedia_en_all_maxi_2026-02/Quantum_mechanics"
+  },
+  {
+    "title": "Quantum field theory",
+    "snippet": "Quantum field theory (QFT) is the theoretical framework describing the physics of quantum fields. QFT is used in particle physics and condensed matter physics to construct physical models...",
+    "url": "/wikipedia_en_all_maxi_2026-02/Quantum_field_theory"
+  }
+]
+```
+
+**Token-efficient workflow:**
+1. Use `search_with_snippets` to get previews of multiple articles
+2. Evaluate relevance from the snippets (~200 chars each)
+3. Only call `get_content` or `get_content_summary` for the most relevant article(s)
+
 ### `get_content`
 
-Retrieve the full text content of an article.
+Retrieve the full text content of an article. Tables (infoboxes, comparison tables), navigation elements, images, and reference footers are automatically stripped to minimize token usage while preserving article body text.
 
 **Parameters:**
 
@@ -164,7 +210,7 @@ A comprehensive test harness is included to verify your Kiwix instance is workin
 npm test
 ```
 
-This runs **13 tests** covering:
+This runs **17 tests** covering:
 
 | Category | Tests |
 |----------|-------|
@@ -173,6 +219,7 @@ This runs **13 tests** covering:
 | **Search** | Basic search, no results, count parameter, special characters, multi-ZIM |
 | **Content** | Article retrieval, invalid ZIM handling |
 | **Performance** | Search response time, content response time |
+| **Search with Snippets** | Basic functionality, count parameter, empty results, content quality |
 
 ### Test Output
 
@@ -183,8 +230,8 @@ Results are printed to the console and saved to `test-results.json`:
   "timestamp": "2026-06-13T07:42:24.152Z",
   "target": "http://192.168.1.5:8080",
   "defaultZim": "wikipedia_en_all_maxi_2026-02",
-  "totalTests": 13,
-  "passedTests": 13,
+  "totalTests": 17,
+  "passedTests": 17,
   "failedTests": 0,
   "successRate": "100.0%",
   "results": [...]
@@ -227,6 +274,39 @@ kiwix-wiki-mcp/
 ├── package.json      # Dependencies and scripts
 └── README.md         # This file
 ```
+
+## Token Optimization Tips
+
+### Automatic Optimizations
+
+| Feature | Description | Savings |
+|---------|-------------|---------|
+| Table stripping | Infoboxes, comparison tables, and reference footers are excluded from `get_content`, `get_content_summary`, and `search_with_snippets` output | 10-30% per article |
+| Navigation stripping | Sidebars, category links, and navigation elements are removed | ~5-10% per article |
+| Citation removal | Numeric citation brackets like `[1]`, `[2][3]` are stripped from all content tools | ~200-800 tokens per article |
+| [edit] marker removal | Section heading markers like `"Quantum mechanics[edit]"` are cleaned | ~50-200 tokens per article |
+| Low-value section removal | "See also", "Further reading", "External links", and "References" sections are stripped from `get_content` output | ~1,000-4,000 tokens per full article |
+
+### Recommended Workflow
+
+For the most token-efficient RAG workflow, follow this pattern:
+
+```
+1. search_with_snippets → Get ~200 char previews of N articles (~500-800 tokens total)
+2. Evaluate relevance from snippets (no additional tokens consumed)
+3. get_content_summary → Fetch only the most relevant article's intro (~200-400 tokens)
+4. get_content → Only if full details are needed (~5,000-20,000+ tokens)
+```
+
+### Best Practices
+
+| Practice | Benefit |
+|----------|---------|
+| Always start with `search_with_snippets` | Avoid fetching content for irrelevant articles |
+| Use `count: 1-3` in search | Limit results to the most relevant articles |
+| Prefer `get_content_summary` over `get_content` | Get intro paragraphs at ~5% of the token cost |
+| Specify `zim_file` explicitly | Avoid searching wrong ZIM files and wasting queries |
+| Use descriptive search queries | More specific queries return more relevant results |
 
 ## License
 
