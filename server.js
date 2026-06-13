@@ -6,11 +6,11 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { convert } from "html-to-text"; // Add this import
 
-// The base IP of your Kiwix server
-const KIWIX_BASE = "http://192.168.1.5:8080";
+// The base IP of your Kiwix server (override via KIWIX_BASE_URL env var)
+const KIWIX_BASE = process.env.KIWIX_BASE_URL || "http://192.168.1.5:8080";
 
-// Default ZIM file to use if none is specified (Wikipedia)
-const DEFAULT_ZIM = "wikipedia_en_all_maxi_2026-02"; 
+// Default ZIM file to use if none is specified (Wikipedia) (override via DEFAULT_ZIM env var)
+const DEFAULT_ZIM = process.env.DEFAULT_ZIM || "wikipedia_en_all_maxi_2026-02";
 
 const server = new Server(
   {
@@ -113,7 +113,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   try {
     switch (name) {
       case "search_zim": {
-              const targetZim = args?.zim_file || DEFAULT_ZIM;
               
               // Default to a small number (e.g., 3) if the LLM doesn't specify one
               const resultCount = args?.count || 3; 
@@ -146,7 +145,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             }
 
       case "get_content_summary": {
-              const targetZim = args?.zim_file || DEFAULT_ZIM;
               let sanitizedTitle = args.title.replace(/ /g, "_");
               const pageUrl = `/content/${targetZim}/${sanitizedTitle}`;
               
