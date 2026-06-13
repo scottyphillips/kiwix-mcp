@@ -1,0 +1,14 @@
+{
+  "name": "offline-kiwix-mcp",
+  "version": "1.0.0",
+  "description": "MCP Server for offline Kiwix Wikipedia instance",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "html-to-text": "^10.0.0",
+    "node-fetch": "^3.3.0"
+  }
+}
